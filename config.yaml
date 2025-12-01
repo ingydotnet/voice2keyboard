@@ -1,0 +1,38 @@
+# voice2keyboard configuration
+
+# Trigger key to hold for recording
+# Options: alt_r, alt_l, ctrl_r, ctrl_l, shift_r, shift_l, scroll_lock, pause, insert, delete
+trigger_key: alt_r
+
+# Default model (can be overridden via command line)
+default_model: vosk-model-small-en-us-0.15
+# default_model: vosk-model-en-us-0.22-lgraph  # medium
+
+# Voice commands for punctuation and formatting
+# Say the word on the left, get the symbol on the right
+voice_commands:
+  period: "."
+  kebab: ","
+  question: "?"
+  exclamation: "!"
+  colon: ":"
+  semicolon: ";"
+  hyphen: "-"
+  dash: "-"
+  quote: '"'
+  parenthesis: "("
+  parentheses: ")"
+  return: "\n"
+  paragraph: "\n\n"
+  # Numbers
+  zero: "0"
+  one: "1"
+  two: "2"
+  three: "3"
+  four: "4"
+  five: "5"
+  six: "6"
+  seven: "7"
+  eight: "8"
+  nine: "9"
+  ten: "10"

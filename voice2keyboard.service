@@ -1,0 +1,12 @@
+[Unit]
+Description=Voice to Keyboard - Real-time voice transcription
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/src/voice2keyboard/.cache/.local/python-venv/bin/python %h/src/voice2keyboard/voice2keyboard.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
