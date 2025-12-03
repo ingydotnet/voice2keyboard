@@ -1,6 +1,23 @@
-# voice2keyboard
+voice2keyboard
+==============
 
-A Linux daemon that provides real-time voice-to-text input. Hold a trigger key to record, and words appear at your cursor as you speak. Runs as a systemd user service for always-on availability.
+Voice to Keyboard Typing
+
+
+## Synopsis
+
+```
+make run key=alt_r
+```
+
+
+## Description
+
+`voice2keyboard` is a Linux program that provides real-time voice-to-text input.
+Hold a trigger key to record, and words appear at your cursor as you speak.
+
+Can be set up as a systemd user service for always-on availability.
+
 
 ## Features
 
@@ -9,16 +26,18 @@ A Linux daemon that provides real-time voice-to-text input. Hold a trigger key t
 - **Works everywhere** - Types into any application that accepts keyboard input
 - **Voice commands** - Say "period", "question", "return" etc. to insert punctuation
 - **Offline processing** - Uses Vosk for local speech recognition, no internet required
-- **Auto-start on login** - Runs as a systemd user service, persists across reboots
+- **Auto-start on login** - Can run as a systemd user service, persists across reboots
 - **Configurable** - Customize trigger key, model, and voice commands via YAML config
 
 ## Requirements
+
 
 ### System
 
 - Linux (tested on Ubuntu/Debian)
 - X11 display server (Wayland support is limited)
 - Working microphone
+
 
 ### Dependencies
 
@@ -32,6 +51,7 @@ sudo apt install alsa-utils   # provides arecord
 - pynput (hotkey detection and keyboard simulation)
 - vosk (streaming speech recognition)
 - Vosk model (downloaded based on `config.yaml`)
+
 
 ## Installation
 
@@ -52,6 +72,7 @@ That's it! The service will:
 3. Download the configured Vosk speech recognition model
 4. Install and enable the systemd user service
 5. Start the service immediately
+
 
 ### Verify Installation
 
@@ -86,6 +107,7 @@ Say these words to insert punctuation and special characters:
 | "paragraph" | double newline |
 | "zero" - "ten" | `0` - `10` |
 
+
 ## Configuration
 
 Edit `config.yaml` to customize behavior:
@@ -107,6 +129,7 @@ voice_commands:
   # Add your own...
 ```
 
+
 ### Trigger Key Override
 
 You can temporarily override the trigger key when running manually:
@@ -114,6 +137,7 @@ You can temporarily override the trigger key when running manually:
 ```bash
 make run key=ctrl_l
 ```
+
 
 ### Available Vosk Models
 
@@ -126,6 +150,7 @@ Models are downloaded from [alphacephei.com/vosk/models](https://alphacephei.com
 | `vosk-model-en-us-0.22` | ~1.8GB | Best accuracy, requires more RAM |
 
 To change models, update `default_model` in `config.yaml` and run `make run` or reinstall the service.
+
 
 ## Make Commands
 
@@ -140,6 +165,7 @@ To change models, update `default_model` in `config.yaml` and run `make run` or 
 | `make clean` | Remove generated files |
 | `make realclean` | Remove everything including models |
 
+
 ## Architecture
 
 ```
@@ -152,6 +178,7 @@ voice2keyboard/
 └── .cache/                # Auto-generated: Python, venv, build tools
 ```
 
+
 ### How It Works
 
 1. **Hotkey detection** - pynput monitors keyboard events for the trigger key
@@ -160,6 +187,7 @@ voice2keyboard/
 4. **Keyboard simulation** - pynput types recognized words at the cursor position
 5. **Voice commands** - Special words are converted to punctuation before typing
 
+
 ### Real-time Processing
 
 Unlike batch transcription, voice2keyboard types words as they are recognized:
@@ -167,6 +195,7 @@ Unlike batch transcription, voice2keyboard types words as they are recognized:
 - **Partial results** - Words appear immediately as Vosk detects them
 - **Final results** - Corrections are applied when phrases complete
 - **Smart spacing** - Automatically handles spaces around words and punctuation
+
 
 ## Troubleshooting
 
@@ -183,6 +212,7 @@ systemctl --user status voice2keyboard
 arecord -d 3 test.wav && aplay test.wav   # Test microphone
 ```
 
+
 ### Permission errors with keyboard
 
 On some systems, you may need to add your user to the `input` group:
@@ -190,6 +220,7 @@ On some systems, you may need to add your user to the `input` group:
 sudo usermod -a -G input $USER
 # Log out and back in
 ```
+
 
 ### X11 vs Wayland
 
@@ -200,9 +231,11 @@ Check your session type:
 echo $XDG_SESSION_TYPE
 ```
 
+
 ### Model not found
 
 If the model fails to download, manually download from [alphacephei.com/vosk/models](https://alphacephei.com/vosk/models) and extract to the project root.
+
 
 ## Development
 
@@ -222,7 +255,7 @@ The Makefile uses the [makes](https://github.com/makeplus/makes) framework which
 
 ## License
 
-See repository for license information.
+MIT License - see [License](License) for details.
 
 ## Contributing
 
