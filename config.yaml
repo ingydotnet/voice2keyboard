@@ -8,6 +8,16 @@ trigger_key: alt_r
 default_model: vosk-model-small-en-us-0.15
 # default_model: vosk-model-en-us-0.22-lgraph  # medium
 
+# Typing mode: how text is output
+# - buffered: Wait for natural pauses before typing (more accurate, recommended)
+# - realtime: Type words immediately as recognized (faster, less accurate)
+typing_mode: buffered
+
+# Additional delay (in seconds) after speech pause before typing
+# Gives the model extra time to refine predictions with full context
+# Set to 0 to disable. Only applies in buffered mode.
+pause_delay: 0.3
+
 # Voice commands for punctuation and formatting
 # Say the word on the left, get the symbol on the right
 voice_commands:

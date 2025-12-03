@@ -44,6 +44,8 @@ trigger_key_name = os.environ.get("TRIGGER_KEY") or config.get("trigger_key", "a
 TRIGGER_KEY = KEY_MAP.get(trigger_key_name, Key.alt_r)
 DEFAULT_MODEL = config.get("default_model", "vosk-model-small-en-us-0.15")
 VOICE_COMMANDS = config.get("voice_commands", {})
+TYPING_MODE = config.get("typing_mode", "buffered")  # buffered or realtime
+PAUSE_DELAY = config.get("pause_delay", 0.3)
 
 # Global state
 is_recording = False
@@ -108,7 +110,7 @@ def type_text(words):
 
 
 def stream_transcribe():
-    """Record and transcribe audio in real-time, typing as words are recognized"""
+    """Record and transcribe audio, typing based on configured mode"""
     global model
 
     rec = KaldiRecognizer(model, SAMPLE_RATE)
@@ -132,36 +134,50 @@ def stream_transcribe():
                 break
 
             if rec.AcceptWaveform(data):
-                # Final result - type any new words not already typed as partials
+                # Final result - Vosk has detected a phrase boundary (pause)
                 result = json.loads(rec.Result())
                 text = result.get("text", "")
                 if text:
-                    final_words = text.split()
-                    # Only type words we haven't typed yet
-                    new_words = final_words[len(last_partial_words):]
-                    if new_words:
-                        type_text(new_words)
+                    if TYPING_MODE == "buffered":
+                        # Buffered mode: type the complete final result with optional delay
+                        if PAUSE_DELAY > 0:
+                            time.sleep(PAUSE_DELAY)
+                        final_words = text.split()
+                        type_text(final_words)
+                    else:
+                        # Realtime mode: type any new words not already typed
+                        final_words = text.split()
+                        new_words = final_words[len(last_partial_words):]
+                        if new_words:
+                            type_text(new_words)
                     last_partial_words = []
             else:
-                # Partial result - type new words as they appear
-                partial = json.loads(rec.PartialResult())
-                partial_text = partial.get("partial", "")
-                if partial_text:
-                    partial_words = partial_text.split()
-                    # Type any new words beyond what we've already typed
-                    new_words = partial_words[len(last_partial_words):]
-                    if new_words:
-                        type_text(new_words)
-                        last_partial_words = partial_words
+                # Partial result - intermediate prediction
+                if TYPING_MODE == "realtime":
+                    # Realtime mode: type new words as they appear
+                    partial = json.loads(rec.PartialResult())
+                    partial_text = partial.get("partial", "")
+                    if partial_text:
+                        partial_words = partial_text.split()
+                        new_words = partial_words[len(last_partial_words):]
+                        if new_words:
+                            type_text(new_words)
+                            last_partial_words = partial_words
+                # Buffered mode: ignore partials, wait for final results
 
         # Get any remaining audio as final result
         result = json.loads(rec.FinalResult())
         text = result.get("text", "")
         if text:
             final_words = text.split()
-            new_words = final_words[len(last_partial_words):]
-            if new_words:
-                type_text(new_words)
+            if TYPING_MODE == "buffered":
+                # Type the complete final result
+                type_text(final_words)
+            else:
+                # Realtime mode: only type new words
+                new_words = final_words[len(last_partial_words):]
+                if new_words:
+                    type_text(new_words)
 
     finally:
         process.terminate()
@@ -214,7 +230,8 @@ def main():
     model = Model(model_path)
 
     print("voice2keyboard running")
-    print(f"Hold {TRIGGER_KEY} to record and type in real-time")
+    print(f"Hold {TRIGGER_KEY} to record")
+    print(f"Mode: {TYPING_MODE}" + (f" (pause_delay: {PAUSE_DELAY}s)" if TYPING_MODE == "buffered" and PAUSE_DELAY > 0 else ""))
     print("Press Ctrl+C to exit")
 
     def signal_handler(sig, frame):
