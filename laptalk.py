@@ -249,11 +249,13 @@ has_typed_anything = False
 capitalize_next = True  # Capitalize first word and after sentence-ending punctuation
 last_char_typed = ""  # Track last character to prevent double spaces
 currently_pressed_keys = set()  # Track pressed keys for combination support
+trigger_key_pressed = None  # Track which key triggered the current recording
 lock = threading.Lock()
 kb_controller = Controller()
 model = None  # Vosk model
 whisper_model = None  # Whisper model
 recording_thread = None
+recording_process = None  # Audio recording subprocess (arecord/rec)
 stop_recording_event = threading.Event()
 log_file = None  # Log file handle (None = no logging)
 config_path = None  # Set in main(), used by config watcher
@@ -483,12 +485,13 @@ def type_text(words):
 
 def stream_transcribe():
     """Record and transcribe audio, typing based on configured mode"""
-    global model
+    global model, recording_process
 
     rec = KaldiRecognizer(model, SAMPLE_RATE)
 
     # Start audio recording process
     process = subprocess.Popen(get_audio_record_cmd(), stdout=subprocess.PIPE)
+    recording_process = process
 
     last_partial_words = []
 
@@ -547,16 +550,18 @@ def stream_transcribe():
     finally:
         process.terminate()
         process.wait()
+        recording_process = None
 
 
 def stream_transcribe_whisper():
     """Record and transcribe audio using faster-whisper with VAD"""
-    global whisper_model, last_char_typed
+    global whisper_model, last_char_typed, recording_process
 
     pipeline_start = time.perf_counter()
 
     # Start audio recording process
     process = subprocess.Popen(get_audio_record_cmd(), stdout=subprocess.PIPE)
+    recording_process = process
 
     audio_chunks = []
 
@@ -571,6 +576,13 @@ def stream_transcribe_whisper():
             audio_chunks.append(audio_chunk)
 
         recording_done = time.perf_counter()
+        timestamp = datetime.now()
+
+        # Always create a log entry, even if no input detected
+        text = None
+        is_hallucination = False
+        typed_tokens = None
+        original_tokens = None
 
         # Transcribe accumulated audio when key is released
         if audio_chunks:
@@ -582,8 +594,6 @@ def stream_transcribe_whisper():
             if len(audio_data) >= SAMPLE_RATE * 0.5:
                 # Time the transcription
                 before_transcribe = time.perf_counter()
-                timestamp = datetime.now()
-
                 start_time = time.perf_counter()
 
                 # Use optimized settings for faster transcription
@@ -632,7 +642,6 @@ def stream_transcribe_whisper():
 
                     if tokens:
                         typing_start = time.perf_counter()
-                        original_tokens, typed_tokens = None, None
                         if not is_hallucination:
                             original_tokens, typed_tokens = type_text(tokens)
                             # Add space after transcribed text only if it doesn't end with punctuation
@@ -642,58 +651,98 @@ def stream_transcribe_whisper():
                                 kb_controller.type(" ")
                                 last_char_typed = " "
                         typing_done = time.perf_counter()
+                    else:
+                        typing_start = after_tokenize
+                        typing_done = after_tokenize
+                else:
+                    # No text from transcription
+                    before_cleanup = after_transcribe
+                    after_cleanup = after_transcribe
+                    before_tokenize = after_transcribe
+                    after_tokenize = after_transcribe
+                    typing_start = after_transcribe
+                    typing_done = after_transcribe
+            else:
+                # Recording too short
+                before_concat = recording_done
+                after_concat = recording_done
+                before_transcribe = recording_done
+                after_transcribe = recording_done
+                before_cleanup = recording_done
+                after_cleanup = recording_done
+                before_tokenize = recording_done
+                after_tokenize = recording_done
+                typing_start = recording_done
+                typing_done = recording_done
+                elapsed_ms = 0
+        else:
+            # No audio chunks
+            before_concat = recording_done
+            after_concat = recording_done
+            before_transcribe = recording_done
+            after_transcribe = recording_done
+            before_cleanup = recording_done
+            after_cleanup = recording_done
+            before_tokenize = recording_done
+            after_tokenize = recording_done
+            typing_start = recording_done
+            typing_done = recording_done
+            elapsed_ms = 0
 
-                        # Calculate timing breakdown - EVERYTHING from key release to typing done
-                        user_latency_ms = (typing_done - key_release_time) * 1000 if key_release_time else 0
+        # Always log an entry
+        # Calculate timing breakdown
+        user_latency_ms = (typing_done - key_release_time) * 1000 if key_release_time else 0
+        wait_stop_ms = (recording_done - key_release_time) * 1000 if key_release_time else 0
+        gap1_ms = (before_concat - recording_done) * 1000
+        concat_ms = (after_concat - before_concat) * 1000
+        gap2_ms = (before_transcribe - after_concat) * 1000
+        transcribe_ms = elapsed_ms
+        cleanup_ms = (after_cleanup - before_cleanup) * 1000
+        tokenize_ms = (after_tokenize - before_tokenize) * 1000
+        gap3_ms = (typing_start - after_tokenize) * 1000
+        typing_ms = (typing_done - typing_start) * 1000
 
-                        # Detailed breakdown of every stage
-                        wait_stop_ms = (recording_done - key_release_time) * 1000 if key_release_time else 0
-                        gap1_ms = (before_concat - recording_done) * 1000
-                        concat_ms = (after_concat - before_concat) * 1000
-                        gap2_ms = (before_transcribe - after_concat) * 1000
-                        transcribe_ms = elapsed_ms  # Now includes text collection (generator evaluation)
-                        cleanup_ms = (after_cleanup - before_cleanup) * 1000
-                        tokenize_ms = (after_tokenize - before_tokenize) * 1000
-                        gap3_ms = (typing_start - after_tokenize) * 1000
-                        typing_ms = (typing_done - typing_start) * 1000
+        # Pause before logging to ensure typing animation is complete
+        if typing_ms > 0:
+            time.sleep(typing_ms / 1000.0)
 
-                        # Sum check
-                        sum_ms = (wait_stop_ms + gap1_ms + concat_ms + gap2_ms + transcribe_ms +
-                                  cleanup_ms + tokenize_ms + gap3_ms + typing_ms)
+        # Prepare log text
+        if text:
+            # Truncate text for logging if needed
+            if len(text) > 72:
+                extra_chars = len(text) - 72
+                log_text = f"{text[:72]}… +{extra_chars}"
+            else:
+                log_text = text
+            log_text = log_text + (' [HALLUCINATION]' if is_hallucination else '')
+        else:
+            log_text = "<no input detected>"
 
-                        # Pause before logging to ensure typing animation is complete
-                        time.sleep(typing_ms / 1000.0)
-
-                        # Truncate text for logging if needed
-                        if len(text) > 72:
-                            extra_chars = len(text) - 72
-                            log_text = f"{text[:72]}… +{extra_chars}"
-                        else:
-                            log_text = text
-
-                        # Log: timestamp | text | breakdown
-                        log("")  # Blank line before entry
-                        log(f"time: {timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
-                        log(f"text: {log_text}{' [HALLUCINATION]' if is_hallucination else ''}")
-                        if typed_tokens and original_tokens != typed_tokens:
-                            log(f"Text: {' '.join(typed_tokens)}")
-                        log(f"info:")
-                        log(f"  wait_stop: {wait_stop_ms:.0f}ms")
-                        log(f"  concat: {concat_ms:.0f}ms")
-                        log(f"  transcribe: {transcribe_ms:.0f}ms")
-                        log(f"  cleanup: {cleanup_ms:.0f}ms")
-                        log(f"  tokenize: {tokenize_ms:.0f}ms")
-                        log(f"  typing: {typing_ms:.0f}ms")
-                        log(f"  TOTAL: {user_latency_ms:.0f}ms")
+        # Log: timestamp | text | breakdown
+        log("")  # Blank line before entry
+        log(f"time: {timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
+        log(f"key:  {trigger_key_pressed}")
+        log(f"text: {log_text}")
+        if typed_tokens and original_tokens and original_tokens != typed_tokens:
+            log(f"Text: {' '.join(typed_tokens)}")
+        log(f"info:")
+        log(f"  wait_stop: {wait_stop_ms:.0f}ms")
+        log(f"  concat: {concat_ms:.0f}ms")
+        log(f"  transcribe: {transcribe_ms:.0f}ms")
+        log(f"  cleanup: {cleanup_ms:.0f}ms")
+        log(f"  tokenize: {tokenize_ms:.0f}ms")
+        log(f"  typing: {typing_ms:.0f}ms")
+        log(f"  TOTAL: {user_latency_ms:.0f}ms")
 
     finally:
         process.terminate()
         process.wait()
+        recording_process = None
 
 
 def on_key_press(key):
     """Handle key press events"""
-    global is_recording, recording_thread, has_typed_anything, capitalize_next, last_char_typed, currently_pressed_keys
+    global is_recording, recording_thread, has_typed_anything, capitalize_next, last_char_typed, currently_pressed_keys, trigger_key_pressed
 
     # Track pressed keys for combination detection
     currently_pressed_keys.add(key)
@@ -706,6 +755,7 @@ def on_key_press(key):
                 has_typed_anything = False
                 capitalize_next = True  # Start new recording with capitalization
                 last_char_typed = ""  # Reset for new recording
+                trigger_key_pressed = key  # Remember which key triggered this recording
                 stop_recording_event.clear()
 
                 # Select transcription function based on engine
@@ -892,6 +942,13 @@ Select a model and other options in config.yaml or use --model=... etc.
 
     def signal_handler(sig, frame):
         log("\nExiting...")
+        # Stop recording and clean up subprocess
+        stop_recording_event.set()
+        if recording_process:
+            recording_process.terminate()
+            recording_process.wait()
+        if recording_thread:
+            recording_thread.join(timeout=2.0)
         if config_observer:
             config_observer.stop()
         if log_file:
