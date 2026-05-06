@@ -1,5 +1,6 @@
+R := https://github.com/makeplus/makes
 M := .cache/makes
-$(shell [ -d $M ] || ( git clone -q https://github.com/makeplus/makes $M))
+$(shell [ -d '$M' ] || git clone -q $R '$M')
 
 # Use Python 3.13 (3.14 has compatibility issues with faster-whisper)
 PYTHON-VERSION ?= 3.13.1
