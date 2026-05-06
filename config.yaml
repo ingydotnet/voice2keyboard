@@ -64,7 +64,9 @@ hallucinations:
 # Universal translations (works with all engines)
 # Phrases are matched case-insensitively
 translations:
+  babaska: Babashka
   cloud code: Claude Code
+  erin: Aaron
 
 # Voice translations for punctuation and formatting (Vosk only)
 # Say the word on the left, get the symbol on the right
