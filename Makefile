@@ -75,12 +75,6 @@ endif
 INFERRED_ENGINE := $(if $(findstring vosk-,$(EFFECTIVE_MODEL)),vosk,whisper)
 
 run: $(DEPS)
-ifeq ($(key),)
-	@echo "Error: key parameter required"
-	@echo "Usage: make run key=alt_r"
-	@echo "       make run key=shift_l-ctrl_r model=vosk-model-small-en-us-0.15"
-	@exit 1
-endif
 ifeq ($(INFERRED_ENGINE),vosk)
 	@$(MAKE) -s $(EFFECTIVE_MODEL)
 endif

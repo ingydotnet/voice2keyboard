@@ -33,6 +33,9 @@ model: base.en                               # Whisper: English only, fast, good
 # Log file
 log: laptalk-log.txt
 
+# Capitalize first character of each recording
+upper: true
+
 # Typing mode: how text is output
 # - buffered: Wait for natural pauses before typing (more accurate, recommended)
 # - realtime: Type words immediately as recognized (faster, less accurate)
@@ -42,6 +45,16 @@ mode: buffered
 # Gives the model extra time to refine predictions with full context
 # Set to 0 to disable. Only applies in buffered mode.
 pause: 0.3
+
+# Trigger keys - each key can override mode, pause, upper
+# If no keys are defined here, use --key on the command line
+# Key combinations use '+' (e.g., alt_r+shift_r)
+# keys:
+#   shift_r:
+#     upper: true
+#   alt_r:
+#     mode: realtime
+#     upper: false
 
 # Faster-whisper engine settings (ignored for Vosk models)
 whisper:

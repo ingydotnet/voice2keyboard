@@ -60,6 +60,67 @@ for key_name in ["scroll_lock", "pause", "insert"]:
     if hasattr(Key, key_name):
         KEY_MAP[key_name] = getattr(Key, key_name)
 
+def parse_key_spec(key_spec):
+    """Parse a key spec like 'alt_r', 'shift_l+ctrl_r', or 'shift_l-ctrl_r' into a frozenset of Key objects."""
+    key_spec = str(key_spec)
+    if '+' in key_spec:
+        parts = [k.strip() for k in key_spec.split('+')]
+    elif '-' in key_spec:
+        parts = [k.strip() for k in key_spec.split('-')]
+    else:
+        parts = [key_spec.strip()]
+
+    keys = set()
+    for k in parts:
+        key_obj = KEY_MAP.get(k, KEY_MAP.get(k.lower()))
+        if key_obj is None:
+            valid_keys = sorted(name for name in KEY_MAP.keys() if not name.startswith('ctl_'))
+            raise ValueError(f"Invalid key name '{k}'. Valid keys: {', '.join(valid_keys)}")
+        keys.add(key_obj)
+    return frozenset(keys)
+
+
+def build_trigger_configs(config, cli_keys=None):
+    """Build trigger configs from config keys: mapping, filtered by CLI --key args.
+
+    Returns dict mapping frozenset[Key] -> dict of per-key settings (mode, pause, upper).
+    """
+    defaults = {
+        "mode": config.get("mode", "buffered"),
+        "pause": config.get("pause", 0.3),
+        "upper": config.get("upper", True),
+    }
+
+    keys_section = config.get("keys", {})
+    result = {}
+
+    if keys_section:
+        for key_spec, overrides in keys_section.items():
+            key_set = parse_key_spec(key_spec)
+            merged = dict(defaults)
+            if overrides and isinstance(overrides, dict):
+                for field in ("mode", "pause", "upper"):
+                    if field in overrides:
+                        merged[field] = overrides[field]
+            result[key_set] = merged
+
+    # Filter by CLI --key if provided
+    if cli_keys:
+        cli_key_sets = {parse_key_spec(k) for k in cli_keys}
+        if keys_section:
+            filtered = {ks: cfg for ks, cfg in result.items() if ks in cli_key_sets}
+            # Add CLI keys not in config with defaults
+            for ks in cli_key_sets:
+                if ks not in filtered:
+                    filtered[ks] = dict(defaults)
+            result = filtered
+        else:
+            for ks in cli_key_sets:
+                result[ks] = dict(defaults)
+
+    return result
+
+
 # Known Whisper models
 WHISPER_MODELS = [
     "tiny", "tiny.en",
@@ -134,11 +195,11 @@ def get_whisper_device_config(config):
 def reload_config():
     """Reload hot-reloadable settings from config file.
 
-    Reloads: mode, pause, hallucinations, translations, vosk-translations
-    Does NOT reload: model (requires restart)
+    Reloads: mode, pause, upper, hallucinations, translations, vosk-translations
+    Does NOT reload: model, keys (requires restart)
     """
     global config, GENERAL_TRANSLATIONS, VOICE_TRANSLATIONS, TYPING_MODE, PAUSE_DELAY
-    global HALLUCINATIONS_EXACT, HALLUCINATIONS_SUBSTRING
+    global HALLUCINATIONS_EXACT, HALLUCINATIONS_SUBSTRING, TRIGGER_CONFIGS
 
     try:
         new_config = load_config(config_path)
@@ -177,6 +238,27 @@ def reload_config():
                 HALLUCINATIONS_SUBSTRING.append(h[:-1].lower())
             else:
                 HALLUCINATIONS_EXACT.append(h.rstrip(' .').lower())
+
+        # Update reloadable fields in TRIGGER_CONFIGS (mode, pause, upper)
+        defaults = {
+            "mode": config.get("mode", "buffered"),
+            "pause": config.get("pause", 0.3),
+            "upper": config.get("upper", True),
+        }
+        keys_section = config.get("keys", {})
+        for keyset in TRIGGER_CONFIGS:
+            merged = dict(defaults)
+            # Re-apply per-key overrides from new config
+            if keys_section:
+                for key_spec, overrides in keys_section.items():
+                    try:
+                        if parse_key_spec(key_spec) == keyset and overrides and isinstance(overrides, dict):
+                            for field in ("mode", "pause", "upper"):
+                                if field in overrides:
+                                    merged[field] = overrides[field]
+                    except ValueError:
+                        pass
+            TRIGGER_CONFIGS[keyset] = merged
 
     log(f"Config reloaded: mode={TYPING_MODE}, pause={PAUSE_DELAY}, "
         f"hallucinations={len(HALLUCINATIONS_EXACT) + len(HALLUCINATIONS_SUBSTRING)}, "
@@ -250,6 +332,8 @@ capitalize_next = True  # Capitalize first word and after sentence-ending punctu
 last_char_typed = ""  # Track last character to prevent double spaces
 currently_pressed_keys = set()  # Track pressed keys for combination support
 trigger_key_pressed = None  # Track which key triggered the current recording
+TRIGGER_CONFIGS = {}  # frozenset[Key] -> {"mode":..., "pause":..., "upper":...}
+active_trigger = None  # Which keyset is currently recording
 lock = threading.Lock()
 kb_controller = Controller()
 model = None  # Vosk model
@@ -483,9 +567,12 @@ def type_text(words):
     return words, processed
 
 
-def stream_transcribe():
+def stream_transcribe(session_config):
     """Record and transcribe audio, typing based on configured mode"""
     global model, recording_process
+
+    typing_mode = session_config.get("mode", TYPING_MODE)
+    pause_delay = session_config.get("pause", PAUSE_DELAY)
 
     rec = KaldiRecognizer(model, SAMPLE_RATE)
 
@@ -506,10 +593,10 @@ def stream_transcribe():
                 result = json.loads(rec.Result())
                 text = result.get("text", "")
                 if text:
-                    if TYPING_MODE == "buffered":
+                    if typing_mode == "buffered":
                         # Buffered mode: type the complete final result with optional delay
-                        if PAUSE_DELAY > 0:
-                            time.sleep(PAUSE_DELAY)
+                        if pause_delay > 0:
+                            time.sleep(pause_delay)
                         final_words = text.split()
                         type_text(final_words)
                     else:
@@ -521,7 +608,7 @@ def stream_transcribe():
                     last_partial_words = []
             else:
                 # Partial result - intermediate prediction
-                if TYPING_MODE == "realtime":
+                if typing_mode == "realtime":
                     # Realtime mode: type new words as they appear
                     partial = json.loads(rec.PartialResult())
                     partial_text = partial.get("partial", "")
@@ -538,7 +625,7 @@ def stream_transcribe():
         text = result.get("text", "")
         if text:
             final_words = text.split()
-            if TYPING_MODE == "buffered":
+            if typing_mode == "buffered":
                 # Type the complete final result
                 type_text(final_words)
             else:
@@ -553,7 +640,7 @@ def stream_transcribe():
         recording_process = None
 
 
-def stream_transcribe_whisper():
+def stream_transcribe_whisper(session_config):
     """Record and transcribe audio using faster-whisper with VAD"""
     global whisper_model, last_char_typed, recording_process
 
@@ -742,37 +829,42 @@ def stream_transcribe_whisper():
 
 def on_key_press(key):
     """Handle key press events"""
-    global is_recording, recording_thread, has_typed_anything, capitalize_next, last_char_typed, currently_pressed_keys, trigger_key_pressed
+    global is_recording, recording_thread, has_typed_anything, capitalize_next
+    global last_char_typed, currently_pressed_keys, trigger_key_pressed, active_trigger
 
     # Track pressed keys for combination detection
     currently_pressed_keys.add(key)
 
-    # Check if all trigger keys are now pressed
-    if TRIGGER_KEYS.issubset(currently_pressed_keys):
-        with lock:
-            if not is_recording:
-                is_recording = True
-                has_typed_anything = False
-                capitalize_next = True  # Start new recording with capitalization
-                last_char_typed = ""  # Reset for new recording
-                trigger_key_pressed = key  # Remember which key triggered this recording
-                stop_recording_event.clear()
+    # Check each trigger (longest match first) to see if all its keys are pressed
+    for trigger_keyset, trigger_config in sorted(TRIGGER_CONFIGS.items(), key=lambda x: len(x[0]), reverse=True):
+        if trigger_keyset.issubset(currently_pressed_keys):
+            with lock:
+                if not is_recording:
+                    is_recording = True
+                    has_typed_anything = False
+                    capitalize_next = trigger_config.get("upper", True)
+                    last_char_typed = ""  # Reset for new recording
+                    trigger_key_pressed = key  # Remember which key triggered this recording
+                    active_trigger = trigger_keyset
+                    session_config = dict(trigger_config)  # Snapshot for this session
+                    stop_recording_event.clear()
 
-                # Select transcription function based on engine
-                transcribe_fn = stream_transcribe_whisper if ENGINE == "whisper" else stream_transcribe
-                recording_thread = threading.Thread(target=transcribe_fn, daemon=True)
-                recording_thread.start()
+                    # Select transcription function based on engine
+                    transcribe_fn = stream_transcribe_whisper if ENGINE == "whisper" else stream_transcribe
+                    recording_thread = threading.Thread(target=transcribe_fn, args=(session_config,), daemon=True)
+                    recording_thread.start()
+            break  # Only activate the first matching trigger
 
 
 def on_key_release(key):
     """Handle key release events"""
-    global is_recording, recording_thread, currently_pressed_keys, key_release_time
+    global is_recording, recording_thread, currently_pressed_keys, key_release_time, active_trigger
 
     # Remove from pressed keys
     currently_pressed_keys.discard(key)
 
-    # If we were recording and any trigger key was released, stop recording
-    if is_recording and key in TRIGGER_KEYS:
+    # If we were recording and any key from the active trigger was released, stop recording
+    if is_recording and active_trigger and key in active_trigger:
         with lock:
             if is_recording:
                 key_release_time = time.perf_counter()  # Track when user released key
@@ -781,35 +873,37 @@ def on_key_release(key):
                 if recording_thread:
                     recording_thread.join(timeout=1.0)
                     recording_thread = None
+                active_trigger = None
 
 
 def main():
-    global model, whisper_model, TRIGGER_KEYS, TYPING_MODE, PAUSE_DELAY, ENGINE
+    global model, whisper_model, TRIGGER_CONFIGS, TYPING_MODE, PAUSE_DELAY, ENGINE
     global config_path, config_observer
 
     # Parse command-line arguments
     parser = argparse.ArgumentParser(
         prog="laptalk.py",
-        usage="%(prog)s --key KEY [--log LOG] [--config FILE] [--model MODEL]",
+        usage="%(prog)s [--key KEY ...] [--log LOG] [--config FILE] [--model MODEL]",
         description="LapTalk: Hold a key to record, text appears as you speak",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   %(prog)s --key alt_r
-  %(prog)s --key shift_l-ctrl_r --model vosk-model-small-en-us-0.15
+  %(prog)s --key shift_r --key alt_r
+  %(prog)s --key shift_l+ctrl_r --model vosk-model-small-en-us-0.15
   %(prog)s --key ctrl_l --mode buffered
   %(prog)s --key alt_r --model medium.en
 
 Available keys: """ + ", ".join(sorted(k for k in KEY_MAP.keys() if not k.startswith('ctl_'))) + """
 
-Key combinations: Use '-' to combine keys (e.g., shift_l-ctrl_l, shift_l-alt_r)
+Key combinations: Use '+' to combine keys (e.g., shift_l+ctrl_l, shift_l+alt_r)
 
 Select a model and other options in config.yaml or use --model=... etc.
 """
     )
 
-    parser.add_argument("--key", required=True,
-                        help="Trigger key or combination (e.g., 'alt_r', 'shift_l-ctrl_r') (required)")
+    parser.add_argument("--key", action="append", dest="keys", default=None,
+                        help="Trigger key or combination (repeatable, e.g., --key alt_r --key shift_r)")
     parser.add_argument("--log",
                         help="Log file path (default: no logging). Use /dev/stdout for console output")
     parser.add_argument("--config", metavar="FILE",
@@ -854,28 +948,17 @@ Select a model and other options in config.yaml or use --model=... etc.
     # Resolve model name (support regex matching)
     model_name = resolve_model_name(model_name, engine)
 
-    # Parse trigger key - support combinations like "shift-ctrl_r"
-    if "-" in args.key:
-        key_parts = [k.strip() for k in args.key.split("-")]
-        TRIGGER_KEYS = set()
-        for k in key_parts:
-            key_obj = KEY_MAP.get(k, KEY_MAP.get(k.lower()))
-            if key_obj is None:
-                # Show documented keys only (exclude ctl_ aliases)
-                valid_keys = sorted(k for k in KEY_MAP.keys() if not k.startswith('ctl_'))
-                print(f"Error: Invalid key name '{k}'", file=sys.stderr)
-                print(f"Valid keys: {', '.join(valid_keys)}", file=sys.stderr)
-                return 1
-            TRIGGER_KEYS.add(key_obj)
-    else:
-        key_obj = KEY_MAP.get(args.key, KEY_MAP.get(args.key.lower()))
-        if key_obj is None:
-            # Show documented keys only (exclude ctl_ aliases)
-            valid_keys = sorted(k for k in KEY_MAP.keys() if not k.startswith('ctl_'))
-            print(f"Error: Invalid key name '{args.key}'", file=sys.stderr)
-            print(f"Valid keys: {', '.join(valid_keys)}", file=sys.stderr)
-            return 1
-        TRIGGER_KEYS = {key_obj}
+    # Build trigger key configurations
+    try:
+        TRIGGER_CONFIGS = build_trigger_configs(config, cli_keys=args.keys)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    if not TRIGGER_CONFIGS:
+        print("Error: No trigger keys defined.", file=sys.stderr)
+        print("Either add a 'keys:' section to config.yaml or use --key on command line.", file=sys.stderr)
+        return 1
     if args.typing_mode:
         TYPING_MODE = args.typing_mode
     if args.pause is not None:
@@ -929,14 +1012,23 @@ Select a model and other options in config.yaml or use --model=... etc.
         return 1
 
     # Format trigger keys display
-    if len(TRIGGER_KEYS) > 1:
-        trigger_display = "-".join(str(k) for k in TRIGGER_KEYS)
-    else:
-        trigger_display = str(list(TRIGGER_KEYS)[0])
+    def format_keyset(keyset):
+        if len(keyset) > 1:
+            return "+".join(str(k) for k in keyset)
+        return str(list(keyset)[0])
 
     log("laptalk running")
     log(f"Engine: {engine}")
-    log(f"Hold {trigger_display} to record")
+    for keyset, kcfg in TRIGGER_CONFIGS.items():
+        extras = []
+        if kcfg.get("mode") != TYPING_MODE:
+            extras.append(f"mode={kcfg['mode']}")
+        if kcfg.get("pause") != PAUSE_DELAY:
+            extras.append(f"pause={kcfg['pause']}")
+        if not kcfg.get("upper", True):
+            extras.append("upper=false")
+        suffix = f" ({', '.join(extras)})" if extras else ""
+        log(f"Hold {format_keyset(keyset)} to record{suffix}")
     log(f"Mode: {TYPING_MODE}" + (f" (pause_delay: {PAUSE_DELAY}s)" if TYPING_MODE == "buffered" and PAUSE_DELAY > 0 else ""))
     log("Press Ctrl+C to exit")
 
