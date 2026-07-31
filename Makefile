@@ -112,10 +112,10 @@ logs:
 	journalctl --user -u laptalk -f
 
 $(PYTHON-VENV)/bin/pynput: $(PYTHON-VENV)
-	@pip install -q --disable-pip-version-check pynput pyyaml vosk watchdog
+	@uv pip install -q pynput pyyaml vosk watchdog
 
 $(PYTHON-VENV)/bin/faster_whisper: $(PYTHON-VENV)
-	@pip install -q --disable-pip-version-check faster-whisper numpy
+	@uv pip install -q faster-whisper numpy
 
 .whisper-model-downloaded: $(PYTHON-VENV)/bin/faster_whisper
 	python -c "from faster_whisper import WhisperModel; WhisperModel('$(if $(model),$(model),$(MODEL))')"
