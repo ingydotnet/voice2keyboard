@@ -37,6 +37,25 @@ except ImportError:
 IS_MACOS = platform.system() == "Darwin"
 IS_LINUX = platform.system() == "Linux"
 
+DEFAULT_TERMINAL_CLASSES = [
+    "gnome-terminal",
+    "ptyxis",
+    "konsole",
+    "kitty",
+    "alacritty",
+    "wezterm",
+    "ghostty",
+    "tilix",
+    "terminator",
+    "xfce4-terminal",
+    "mate-terminal",
+    "lxterminal",
+    "qterminal",
+    "xterm",
+    "uxterm",
+    "rxvt",
+]
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CONFIG_FILE = os.path.join(SCRIPT_DIR, "config.yaml")
 
@@ -83,12 +102,13 @@ def parse_key_spec(key_spec):
 def build_trigger_configs(config, cli_keys=None):
     """Build trigger configs from config keys: mapping, filtered by CLI --key args.
 
-    Returns dict mapping frozenset[Key] -> dict of per-key settings (mode, pause, upper).
+    Returns dict mapping frozenset[Key] -> dict of per-key settings.
     """
     defaults = {
         "mode": config.get("mode", "buffered"),
         "pause": config.get("pause", 0.3),
         "upper": config.get("upper", True),
+        "output": config.get("output", "paste"),
     }
 
     keys_section = config.get("keys", {})
@@ -99,7 +119,7 @@ def build_trigger_configs(config, cli_keys=None):
             key_set = parse_key_spec(key_spec)
             merged = dict(defaults)
             if overrides and isinstance(overrides, dict):
-                for field in ("mode", "pause", "upper"):
+                for field in ("mode", "pause", "upper", "output"):
                     if field in overrides:
                         merged[field] = overrides[field]
             result[key_set] = merged
@@ -145,7 +165,9 @@ def load_config(config_file):
 def init_config(config_path):
     """Initialize config and config-dependent globals from given path"""
     global config, GENERAL_TRANSLATIONS, VOICE_TRANSLATIONS, TYPING_MODE, PAUSE_DELAY
-    global HALLUCINATIONS_EXACT, HALLUCINATIONS_SUBSTRING
+    global OUTPUT_METHOD, CLIPBOARD_PROGRAMS, CLIPBOARD_RESTORE_DELAY
+    global CLIPBOARD_TERMINAL_CLASSES
+    global CLIPBOARD_BACKEND, HALLUCINATIONS_EXACT, HALLUCINATIONS_SUBSTRING
 
     config = load_config(config_path)
 
@@ -155,6 +177,14 @@ def init_config(config_path):
     VOICE_TRANSLATIONS = {k.lower(): v for k, v in config.get("vosk-translations", {}).items()}
     TYPING_MODE = config.get("mode", "buffered")  # buffered or realtime
     PAUSE_DELAY = config.get("pause", 0.3)
+    OUTPUT_METHOD = config.get("output", "paste")
+    clipboard_config = config.get("clipboard", {})
+    CLIPBOARD_PROGRAMS = clipboard_config.get(
+        "programs", ["xsel", "xclip", "pbcopy"])
+    CLIPBOARD_RESTORE_DELAY = clipboard_config.get("restore-delay", 0.25)
+    CLIPBOARD_TERMINAL_CLASSES = clipboard_config.get(
+        "terminal-classes", DEFAULT_TERMINAL_CLASSES)
+    CLIPBOARD_BACKEND = select_clipboard_backend(CLIPBOARD_PROGRAMS)
 
     # Parse hallucinations into exact and substring match lists
     _raw_hallucinations = config.get("hallucinations", [])
@@ -195,11 +225,15 @@ def get_whisper_device_config(config):
 def reload_config():
     """Reload hot-reloadable settings from config file.
 
-    Reloads: mode, pause, upper, hallucinations, translations, vosk-translations
+    Reloads: mode, pause, upper, output, clipboard, hallucinations,
+             translations, vosk-translations
     Does NOT reload: model, keys (requires restart)
     """
     global config, GENERAL_TRANSLATIONS, VOICE_TRANSLATIONS, TYPING_MODE, PAUSE_DELAY
-    global HALLUCINATIONS_EXACT, HALLUCINATIONS_SUBSTRING, TRIGGER_CONFIGS
+    global OUTPUT_METHOD, CLIPBOARD_PROGRAMS, CLIPBOARD_RESTORE_DELAY
+    global CLIPBOARD_TERMINAL_CLASSES
+    global CLIPBOARD_BACKEND, HALLUCINATIONS_EXACT, HALLUCINATIONS_SUBSTRING
+    global TRIGGER_CONFIGS
 
     try:
         new_config = load_config(config_path)
@@ -229,6 +263,16 @@ def reload_config():
         # Reload pause delay
         PAUSE_DELAY = config.get("pause", 0.3)
 
+        # Reload output and clipboard settings
+        OUTPUT_METHOD = config.get("output", "paste")
+        clipboard_config = config.get("clipboard", {})
+        CLIPBOARD_PROGRAMS = clipboard_config.get(
+            "programs", ["xsel", "xclip", "pbcopy"])
+        CLIPBOARD_RESTORE_DELAY = clipboard_config.get("restore-delay", 0.25)
+        CLIPBOARD_TERMINAL_CLASSES = clipboard_config.get(
+            "terminal-classes", DEFAULT_TERMINAL_CLASSES)
+        CLIPBOARD_BACKEND = select_clipboard_backend(CLIPBOARD_PROGRAMS)
+
         # Reload hallucinations
         _raw_hallucinations = config.get("hallucinations", [])
         HALLUCINATIONS_EXACT = []
@@ -244,6 +288,7 @@ def reload_config():
             "mode": config.get("mode", "buffered"),
             "pause": config.get("pause", 0.3),
             "upper": config.get("upper", True),
+            "output": config.get("output", "paste"),
         }
         keys_section = config.get("keys", {})
         for keyset in TRIGGER_CONFIGS:
@@ -253,14 +298,16 @@ def reload_config():
                 for key_spec, overrides in keys_section.items():
                     try:
                         if parse_key_spec(key_spec) == keyset and overrides and isinstance(overrides, dict):
-                            for field in ("mode", "pause", "upper"):
+                            for field in ("mode", "pause", "upper", "output"):
                                 if field in overrides:
                                     merged[field] = overrides[field]
                     except ValueError:
                         pass
             TRIGGER_CONFIGS[keyset] = merged
 
+    backend_name = CLIPBOARD_BACKEND.name if CLIPBOARD_BACKEND else "none"
     log(f"Config reloaded: mode={TYPING_MODE}, pause={PAUSE_DELAY}, "
+        f"output={OUTPUT_METHOD}, clipboard={backend_name}, "
         f"hallucinations={len(HALLUCINATIONS_EXACT) + len(HALLUCINATIONS_SUBSTRING)}, "
         f"general_translations={len(GENERAL_TRANSLATIONS)}, "
         f"vosk_translations={len(VOICE_TRANSLATIONS)}")
@@ -320,6 +367,11 @@ GENERAL_TRANSLATIONS = {}
 VOICE_TRANSLATIONS = {}
 TYPING_MODE = "buffered"
 PAUSE_DELAY = 0.3
+OUTPUT_METHOD = "paste"
+CLIPBOARD_PROGRAMS = ["xsel", "xclip", "pbcopy"]
+CLIPBOARD_RESTORE_DELAY = 0.25
+CLIPBOARD_TERMINAL_CLASSES = DEFAULT_TERMINAL_CLASSES
+CLIPBOARD_BACKEND = None
 HALLUCINATIONS_EXACT = []
 HALLUCINATIONS_SUBSTRING = []
 
@@ -332,7 +384,7 @@ capitalize_next = True  # Capitalize first word and after sentence-ending punctu
 last_char_typed = ""  # Track last character to prevent double spaces
 currently_pressed_keys = set()  # Track pressed keys for combination support
 trigger_key_pressed = None  # Track which key triggered the current recording
-TRIGGER_CONFIGS = {}  # frozenset[Key] -> {"mode":..., "pause":..., "upper":...}
+TRIGGER_CONFIGS = {}  # frozenset[Key] -> per-trigger settings
 active_trigger = None  # Which keyset is currently recording
 lock = threading.Lock()
 kb_controller = Controller()
@@ -412,6 +464,225 @@ def check_dependencies():
         return False
 
     return True
+
+
+class ClipboardBackend:
+    """Read and write plain text using a platform clipboard command."""
+
+    def __init__(self, name, required_programs, read_command, write_command,
+                 clear_command=None):
+        self.name = name
+        self.required_programs = required_programs
+        self.read_command = read_command
+        self.write_command = write_command
+        self.clear_command = clear_command
+
+    def available(self):
+        return all(shutil.which(program) for program in self.required_programs)
+
+    def _run(self, command, input_data=None):
+        try:
+            result = subprocess.run(
+                command,
+                input=input_data,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=2.0,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return result
+
+    def read(self):
+        result = self._run(self.read_command)
+        if result is None or result.returncode != 0:
+            return None
+        return result.stdout
+
+    def write(self, data):
+        result = self._run(self.write_command, input_data=data)
+        return result is not None and result.returncode == 0
+
+    def clear(self):
+        if self.clear_command:
+            result = self._run(self.clear_command)
+            return result is not None and result.returncode == 0
+        return self.write(b"")
+
+
+def clipboard_backends():
+    """Return supported clipboard command adapters by config name."""
+    backends = {}
+    if IS_LINUX:
+        backends.update({
+            "xsel": ClipboardBackend(
+                "xsel",
+                ["xsel"],
+                ["xsel", "--clipboard", "--output"],
+                ["xsel", "--clipboard", "--input"],
+                ["xsel", "--clipboard", "--clear"],
+            ),
+            "xclip": ClipboardBackend(
+                "xclip",
+                ["xclip"],
+                ["xclip", "-selection", "clipboard", "-out"],
+                ["xclip", "-selection", "clipboard", "-in"],
+            ),
+        })
+    if IS_MACOS:
+        backends["pbcopy"] = ClipboardBackend(
+            "pbcopy",
+            ["pbcopy", "pbpaste"],
+            ["pbpaste"],
+            ["pbcopy"],
+        )
+    return backends
+
+
+def select_clipboard_backend(programs):
+    """Select the first installed clipboard backend in configured order."""
+    available_backends = clipboard_backends()
+    for program in programs:
+        backend = available_backends.get(program)
+        if backend and backend.available():
+            return backend
+    return None
+
+
+def clipboard_is_empty():
+    """Return whether the platform clipboard has no owner/content, or None."""
+    if IS_LINUX:
+        try:
+            from Xlib import X, display
+            x_display = display.Display()
+            try:
+                clipboard_atom = x_display.intern_atom("CLIPBOARD")
+                return x_display.get_selection_owner(clipboard_atom) == X.NONE
+            finally:
+                x_display.close()
+        except Exception:
+            return None
+
+    if IS_MACOS and shutil.which("osascript"):
+        try:
+            result = subprocess.run(
+                ["osascript", "-e", "clipboard info"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=2.0,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if result.returncode != 0:
+            return None
+        info = result.stdout.strip().lower()
+        return not info or info == b"missing value"
+
+    return None
+
+
+def read_clipboard_snapshot(backend):
+    """Return ('text', bytes), ('empty', b''), or ('unsupported', None)."""
+    data = backend.read()
+    if data is not None:
+        return "text", data
+    if clipboard_is_empty() is True:
+        return "empty", b""
+    return "unsupported", None
+
+
+def active_window_classes():
+    """Return the active X11 window's WM_CLASS values, or an empty tuple."""
+    if not IS_LINUX:
+        return ()
+    try:
+        from Xlib import X, display
+        x_display = display.Display()
+        try:
+            root = x_display.screen().root
+            active_atom = x_display.intern_atom("_NET_ACTIVE_WINDOW")
+            active = root.get_full_property(active_atom, X.AnyPropertyType)
+            if active is None or not active.value or active.value[0] == X.NONE:
+                return ()
+            window = x_display.create_resource_object("window", active.value[0])
+            return tuple(window.get_wm_class() or ())
+        finally:
+            x_display.close()
+    except Exception:
+        return ()
+
+
+def active_window_is_terminal():
+    """Return whether the focused X11 window matches a terminal WM_CLASS."""
+    window_classes = [value.lower() for value in active_window_classes()]
+    markers = [value.lower() for value in CLIPBOARD_TERMINAL_CLASSES]
+    return any(
+        marker in window_class
+        for window_class in window_classes
+        for marker in markers
+    )
+
+
+def press_paste_shortcut():
+    """Paste into the focused application using the platform shortcut."""
+    modifier = Key.cmd if IS_MACOS else Key.ctrl
+    kb_controller.press(modifier)
+    try:
+        kb_controller.press("v")
+        kb_controller.release("v")
+    finally:
+        kb_controller.release(modifier)
+
+
+def paste_text(text):
+    """Paste text and restore the previous clipboard. Return True on paste."""
+    backend = CLIPBOARD_BACKEND
+    if backend is None:
+        log("Clipboard paste unavailable: no configured backend found; using typing")
+        return False
+
+    snapshot_kind, snapshot_data = read_clipboard_snapshot(backend)
+    if snapshot_kind == "unsupported":
+        log("Clipboard paste unavailable: existing clipboard is not plain text; using typing")
+        return False
+
+    if not backend.write(text.encode("utf-8")):
+        log(f"Clipboard paste failed using {backend.name}; using typing")
+        return False
+
+    try:
+        press_paste_shortcut()
+    except Exception as error:
+        if snapshot_kind == "empty":
+            backend.clear()
+        else:
+            backend.write(snapshot_data)
+        log(f"Paste shortcut failed ({error}); using typing")
+        return False
+
+    time.sleep(max(0, CLIPBOARD_RESTORE_DELAY))
+    if snapshot_kind == "empty":
+        restored = backend.clear()
+    else:
+        restored = backend.write(snapshot_data)
+    if not restored:
+        log("Clipboard restore failed; dictated text remains on the clipboard")
+    return True
+
+
+def emit_text(text, output_method):
+    """Emit rendered text using paste, with synthetic typing as fallback."""
+    if not text:
+        return
+    if output_method == "paste" and active_window_is_terminal():
+        log("Terminal window detected; using typing output")
+        kb_controller.type(text)
+        return
+    if output_method == "paste" and paste_text(text):
+        return
+    if output_method not in ("paste", "type"):
+        log(f"Unknown output method '{output_method}'; using typing")
+    kb_controller.type(text)
 
 
 def get_available_vosk_models():
@@ -519,12 +790,12 @@ def process_translations(words, translations_dict):
     return result
 
 
-def type_text(words):
-    """Type words at current cursor position. Returns (original_words, processed_words)."""
+def render_text(words, trailing_space=False):
+    """Render words and update cross-chunk formatting state."""
     global has_typed_anything, capitalize_next, last_char_typed
 
     if not words:
-        return words, words
+        return words, words, ""
 
     # Apply universal translations for all engines
     processed = process_translations(words, GENERAL_TRANSLATIONS)
@@ -532,13 +803,14 @@ def type_text(words):
     if ENGINE == "vosk":
         processed = process_translations(processed, VOICE_TRANSLATIONS)
 
+    chunks = []
     for word in processed:
         is_punctuation = word in ".,?!:;"
         is_sentence_end = word in ".?!"
 
         if is_punctuation:
             # Punctuation: no space before, space after
-            kb_controller.type(word + " ")
+            chunks.append(word + " ")
             last_char_typed = " "
             has_typed_anything = False  # Next word shouldn't have leading space
             if is_sentence_end:
@@ -556,23 +828,41 @@ def type_text(words):
 
             if has_typed_anything:
                 # Regular word: space before
-                kb_controller.type(" " + word)
+                chunks.append(" " + word)
                 last_char_typed = word[-1] if word else ""
             else:
                 # First word (or after punctuation): no space before
-                kb_controller.type(word)
+                chunks.append(word)
                 last_char_typed = word[-1] if word else ""
                 has_typed_anything = True
 
-    return words, processed
+    if trailing_space and processed and last_char_typed != " ":
+        chunks.append(" ")
+        last_char_typed = " "
+
+    return words, processed, "".join(chunks)
+
+
+def output_words(words, session_config, trailing_space=False):
+    """Render and emit words. Returns (original_words, processed_words)."""
+    original, processed, text = render_text(words, trailing_space=trailing_space)
+    emit_text(text, session_config.get("output", OUTPUT_METHOD))
+    return original, processed
 
 
 def stream_transcribe(session_config):
-    """Record and transcribe audio, typing based on configured mode"""
+    """Record and transcribe audio, emitting results in the configured mode."""
     global model, recording_process
 
     typing_mode = session_config.get("mode", TYPING_MODE)
     pause_delay = session_config.get("pause", PAUSE_DELAY)
+    output_method = session_config.get("output", OUTPUT_METHOD)
+    effective_config = session_config
+    if typing_mode == "realtime" and output_method == "paste":
+        # Repeated clipboard swaps are not realtime-safe, and the trigger
+        # modifier may still be held while partial results are emitted.
+        effective_config = dict(session_config)
+        effective_config["output"] = "type"
 
     rec = KaldiRecognizer(model, SAMPLE_RATE)
 
@@ -581,6 +871,7 @@ def stream_transcribe(session_config):
     recording_process = process
 
     last_partial_words = []
+    buffered_paste_words = []
 
     try:
         while not stop_recording_event.is_set():
@@ -594,17 +885,21 @@ def stream_transcribe(session_config):
                 text = result.get("text", "")
                 if text:
                     if typing_mode == "buffered":
-                        # Buffered mode: type the complete final result with optional delay
-                        if pause_delay > 0:
-                            time.sleep(pause_delay)
                         final_words = text.split()
-                        type_text(final_words)
+                        if output_method == "paste":
+                            # Paste once after release so the held trigger key
+                            # cannot modify the paste shortcut.
+                            buffered_paste_words.extend(final_words)
+                        else:
+                            if pause_delay > 0:
+                                time.sleep(pause_delay)
+                            output_words(final_words, effective_config)
                     else:
                         # Realtime mode: type any new words not already typed
                         final_words = text.split()
                         new_words = final_words[len(last_partial_words):]
                         if new_words:
-                            type_text(new_words)
+                            output_words(new_words, effective_config)
                     last_partial_words = []
             else:
                 # Partial result - intermediate prediction
@@ -616,7 +911,7 @@ def stream_transcribe(session_config):
                         partial_words = partial_text.split()
                         new_words = partial_words[len(last_partial_words):]
                         if new_words:
-                            type_text(new_words)
+                            output_words(new_words, effective_config)
                             last_partial_words = partial_words
                 # Buffered mode: ignore partials, wait for final results
 
@@ -626,13 +921,18 @@ def stream_transcribe(session_config):
         if text:
             final_words = text.split()
             if typing_mode == "buffered":
-                # Type the complete final result
-                type_text(final_words)
+                if output_method == "paste":
+                    buffered_paste_words.extend(final_words)
+                else:
+                    output_words(final_words, effective_config)
             else:
                 # Realtime mode: only type new words
                 new_words = final_words[len(last_partial_words):]
                 if new_words:
-                    type_text(new_words)
+                    output_words(new_words, effective_config)
+
+        if buffered_paste_words:
+            output_words(buffered_paste_words, effective_config)
 
     finally:
         process.terminate()
@@ -730,13 +1030,8 @@ def stream_transcribe_whisper(session_config):
                     if tokens:
                         typing_start = time.perf_counter()
                         if not is_hallucination:
-                            original_tokens, typed_tokens = type_text(tokens)
-                            # Add space after transcribed text only if it doesn't end with punctuation
-                            # and we didn't just type a space (prevent double spaces)
-                            last_token = typed_tokens[-1] if typed_tokens else ""
-                            if last_token not in (".", ",", "?", "!", ":", ";") and last_char_typed != " ":
-                                kb_controller.type(" ")
-                                last_char_typed = " "
+                            original_tokens, typed_tokens = output_words(
+                                tokens, session_config, trailing_space=True)
                         typing_done = time.perf_counter()
                     else:
                         typing_start = after_tokenize
@@ -789,8 +1084,9 @@ def stream_transcribe_whisper(session_config):
         gap3_ms = (typing_start - after_tokenize) * 1000
         typing_ms = (typing_done - typing_start) * 1000
 
-        # Pause before logging to ensure typing animation is complete
-        if typing_ms > 0:
+        # Pause before logging to ensure synthetic typing animation is complete.
+        # Clipboard output already waited for the target and restored the clipboard.
+        if typing_ms > 0 and session_config.get("output", OUTPUT_METHOD) == "type":
             time.sleep(typing_ms / 1000.0)
 
         # Prepare log text
@@ -818,7 +1114,7 @@ def stream_transcribe_whisper(session_config):
         log(f"  transcribe: {transcribe_ms:.0f}ms")
         log(f"  cleanup: {cleanup_ms:.0f}ms")
         log(f"  tokenize: {tokenize_ms:.0f}ms")
-        log(f"  typing: {typing_ms:.0f}ms")
+        log(f"  output: {typing_ms:.0f}ms")
         log(f"  TOTAL: {user_latency_ms:.0f}ms")
 
     finally:
@@ -1019,6 +1315,9 @@ Select a model and other options in config.yaml or use --model=... etc.
 
     log("laptalk running")
     log(f"Engine: {engine}")
+    backend_name = CLIPBOARD_BACKEND.name if CLIPBOARD_BACKEND else "none"
+    log(f"Output: {OUTPUT_METHOD}" +
+        (f" (clipboard: {backend_name})" if OUTPUT_METHOD == "paste" else ""))
     for keyset, kcfg in TRIGGER_CONFIGS.items():
         extras = []
         if kcfg.get("mode") != TYPING_MODE:
@@ -1027,8 +1326,13 @@ Select a model and other options in config.yaml or use --model=... etc.
             extras.append(f"pause={kcfg['pause']}")
         if not kcfg.get("upper", True):
             extras.append("upper=false")
+        if kcfg.get("output") != OUTPUT_METHOD:
+            extras.append(f"output={kcfg['output']}")
         suffix = f" ({', '.join(extras)})" if extras else ""
         log(f"Hold {format_keyset(keyset)} to record{suffix}")
+        if (engine == "vosk" and kcfg.get("mode") == "realtime" and
+                kcfg.get("output") == "paste"):
+            log("  Realtime Vosk uses type output while the trigger is held")
     log(f"Mode: {TYPING_MODE}" + (f" (pause_delay: {PAUSE_DELAY}s)" if TYPING_MODE == "buffered" and PAUSE_DELAY > 0 else ""))
     log("Press Ctrl+C to exit")
 

@@ -1,11 +1,8 @@
 /my-config.yaml
 /laptalk-log.txt
-/.cache/
+/v2k-log.txt
 /vosk*
 /__pycache__/
 /.packages-installed
 /.whisper-model-downloaded
 /.whisper-packages-installed
-/.claude/
-/CLAUDE.md
-/out.txt

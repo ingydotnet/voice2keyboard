@@ -36,6 +36,41 @@ log: laptalk-log.txt
 # Capitalize first character of each recording
 upper: true
 
+# Output method: paste a complete result through the clipboard, or type it as
+# synthetic keystrokes. Paste is more reliable in applications such as VS Code
+# and Signal. Laptalk performs the paste shortcut automatically.
+output: paste
+
+# Clipboard commands are tried in order and the first installed command is
+# used. xsel and xclip use the X11 CLIPBOARD selection; pbcopy is for macOS.
+# The previous plain-text clipboard is restored after the target consumes the
+# paste. If it cannot be preserved, Laptalk falls back to synthetic typing.
+clipboard:
+  programs:
+  - xsel
+  - xclip
+  - pbcopy
+  restore-delay: 0.25
+  # Terminal windows use synthetic typing instead of clipboard paste. Values
+  # are matched case-insensitively against the active X11 window's WM_CLASS.
+  terminal-classes:
+  - gnome-terminal
+  - ptyxis
+  - konsole
+  - kitty
+  - alacritty
+  - wezterm
+  - ghostty
+  - tilix
+  - terminator
+  - xfce4-terminal
+  - mate-terminal
+  - lxterminal
+  - qterminal
+  - xterm
+  - uxterm
+  - rxvt
+
 # Typing mode: how text is output
 # - buffered: Wait for natural pauses before typing (more accurate, recommended)
 # - realtime: Type words immediately as recognized (faster, less accurate)
@@ -46,7 +81,7 @@ mode: buffered
 # Set to 0 to disable. Only applies in buffered mode.
 pause: 0.3
 
-# Trigger keys - each key can override mode, pause, upper
+# Trigger keys - each key can override mode, pause, upper, output
 # If no keys are defined here, use --key on the command line
 # Key combinations use '+' (e.g., alt_r+shift_r)
 # keys:
@@ -55,6 +90,7 @@ pause: 0.3
 #   alt_r:
 #     mode: realtime
 #     upper: false
+#     output: type
 
 # Faster-whisper engine settings (ignored for Vosk models)
 whisper:

@@ -23,15 +23,14 @@ make run key=alt_r
 
 Then press the Right-Alt key and speak and let go.
 
-Your speech will be converted to text and typed whereever your input focus is!
+Your speech will be converted to text and pasted wherever your input focus is!
 
 
 ## Description
 
-`laptalk` is a Linux program that provides real-time voice-to-text
-input.
-Hold a trigger key (or key combination) to record, and words appear at your
-cursor as you speak.
+`laptalk` is a Linux program that provides real-time voice-to-text input. Hold a
+trigger key (or key combination) to record, and the transcription appears at
+your cursor when it is ready.
 
 Supports two speech recognition engines with automatic detection:
 - **Whisper** - High accuracy, great with technical terms, batch processing
@@ -45,7 +44,9 @@ Can be set up as a systemd user service for always-on availability.
 
 ## Features
 
-- **Works everywhere** - Types into any application that accepts keyboard input
+- **Works everywhere** - Pastes into any application that accepts text input
+- **Reliable output** - Avoids dropped or transposed synthetic keystrokes in
+  applications such as VS Code and Signal
 - **Push-to-talk input** - Hold a trigger key or combination (e.g., Shift+Ctrl)
   to activate recording
 - **Two typing modes** - Buffered (accurate, waits for pauses) or Realtime
@@ -68,10 +69,14 @@ Can be set up as a systemd user service for always-on availability.
 
 ### Dependencies
 
-**Manual install required:**
+**Manual install required on Linux:**
 ```bash
-sudo apt install alsa-utils   # provides arecord
+sudo apt install alsa-utils xsel   # provides arecord and clipboard access
 ```
+
+`xclip` can be used instead of `xsel`. macOS provides `pbcopy` and `pbpaste`.
+If no configured clipboard command is available, Laptalk falls back to
+synthetic typing.
 
 **Automatically managed by Makefile:**
 - Python 3.13.1 (downloaded to `.cache/`)
@@ -187,7 +192,11 @@ applied (except model changes, which require a service restart).
 Reloadable settings:
 - `mode` (buffered/realtime)
 - `pause` (pause delay)
+- `output` (paste/type)
+- `clipboard` (program order and restore delay)
+- `upper` (capitalize the first character)
 - `hallucinations` (ignored phrases)
+- `translations` (universal phrase replacements)
 - `vosk-translations` (voice-to-symbol mappings)
 
 
@@ -267,8 +276,14 @@ macOS requires explicit permissions for accessibility and microphone access:
 ## Usage
 
 1. **Hold the trigger key** (default: Right Alt) in any application
-2. **Speak** - words appear at your cursor (vosk streaming)
-3. **Release the key** to stop recording and start typing (whisper)
+2. **Speak** - Vosk realtime results may appear while you speak
+3. **Release the key** to stop recording; Whisper then pastes the result
+
+Laptalk performs Ctrl+V on Linux or Command+V on macOS automatically. Linux
+terminal windows are detected by `WM_CLASS` and use synthetic typing instead,
+avoiding terminal-specific paste shortcuts and application bindings. Laptalk
+saves the existing plain-text clipboard before a paste and restores it shortly
+afterward.
 
 
 ### Typing Modes
@@ -282,6 +297,22 @@ macOS requires explicit permissions for accessibility and microphone access:
 - Types words immediately as recognized
 - Lower latency but may misrecognize
 - Only works with Vosk engine
+- Always uses synthetic typing because clipboard swaps and a held trigger
+  modifier are not safe for realtime output
+
+
+### Output Methods
+
+**Paste mode (default):**
+- Renders each recognition result as one string
+- Copies it to the standard clipboard and performs the paste shortcut
+- Restores the previous plain-text clipboard after a short delay
+- Falls back to synthetic typing if the clipboard cannot be preserved or used
+- Accumulates buffered Vosk results and pastes once when the trigger is released
+
+**Type mode:**
+- Sends synthetic keyboard events, preserving the previous behavior
+- Can be selected globally or for an individual trigger
 
 
 ### Vosk Translations
@@ -319,6 +350,23 @@ mode: buffered
 # Gives the model extra time to refine predictions
 # Set to 0 to disable. Only applies in buffered mode.
 pause: 0.3
+
+# Output method: paste (default) or type
+output: paste
+
+# Clipboard backends are tried in order. Laptalk performs the paste shortcut
+# and restores the previous plain-text clipboard after this delay.
+clipboard:
+  programs: [xsel, xclip, pbcopy]
+  restore-delay: 0.25
+  # Substrings matched against the active X11 window's WM_CLASS. These windows
+  # use typing output; the full default list is in config.yaml.
+  terminal-classes: [gnome-terminal, ptyxis, konsole, kitty, alacritty]
+
+# A trigger key may override mode, pause, upper, or output:
+# keys:
+#   alt_r:
+#     output: type
 
 # Faster-whisper engine settings (ignored for Vosk models)
 whisper:
@@ -445,7 +493,7 @@ info:
   transcribe: 926ms
   cleanup: 0ms
   tokenize: 0ms
-  typing: 49ms
+  output: 49ms
   TOTAL: 1080ms
 ```
 
@@ -455,7 +503,7 @@ info:
 - **transcribe**: Whisper transcription time (includes text collection)
 - **cleanup**: Text cleanup time (removing Whisper artifacts)
 - **tokenize**: Token processing time
-- **typing**: Keyboard simulation time
+- **output**: Time spent pasting and restoring the clipboard, or typing
 - **TOTAL**: Total user-perceived delay (key release → text appears)
 
 Use this to:
